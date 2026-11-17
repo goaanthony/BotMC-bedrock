@@ -1,0 +1,422 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Modules = exports.Module = exports.Joinability = exports.BedrockPortal = void 0;
+const crypto_1 = require("crypto");
+const debug_1 = __importDefault(require("debug"));
+const uuid_1 = require("uuid");
+const tiny_typed_emitter_1 = require("tiny-typed-emitter");
+const bedrock_portal_nethernet_1 = require("bedrock-portal-nethernet");
+const prismarine_auth_1 = require("prismarine-auth");
+const Host_1 = __importDefault(require("./classes/Host"));
+const Module_1 = __importDefault(require("./classes/Module"));
+exports.Module = Module_1.default;
+const constants_1 = require("./common/constants");
+const Event_1 = __importDefault(require("./handlers/Event"));
+const autoFriendAdd_1 = __importDefault(require("./modules/autoFriendAdd"));
+const inviteOnMessage_1 = __importDefault(require("./modules/inviteOnMessage"));
+const redirectFromRealm_1 = __importDefault(require("./modules/redirectFromRealm"));
+const autoFriendAccept_1 = __importDefault(require("./modules/autoFriendAccept"));
+const updateMemberCount_1 = __importDefault(require("./modules/updateMemberCount"));
+const serverFormList_1 = __importDefault(require("./modules/serverFormList"));
+const start_game_1 = require("./common/start_game");
+const util_1 = require("./common/util");
+const debug = (0, debug_1.default)('bedrock-portal');
+const getDefaultAuthflowOptions = (options = {}) => ({
+    username: 'BedrockPortal',
+    cache: './',
+    options: {
+        authTitle: prismarine_auth_1.Titles.MinecraftIOS,
+        flow: 'sisu',
+        deviceType: 'iOS',
+    },
+    onMsaCode: (res) => {
+        console.log(`${options.username} - ${res.message}`);
+    },
+    ...options,
+});
+class BedrockPortal extends tiny_typed_emitter_1.TypedEmitter {
+    host;
+    options;
+    session;
+    players;
+    peers;
+    modules = new Map();
+    server = new bedrock_portal_nethernet_1.Server();
+    nonceSync = Promise.resolve();
+    constructor(options = {}) {
+        super();
+        this.options = {
+            ip: '',
+            port: 19132,
+            joinability: constants_1.Joinability.FriendsOfFriends,
+            webRTCNetworkId: (0, util_1.getRandomUint64)(),
+            updatePresence: true,
+            ...options,
+            host: options.host instanceof prismarine_auth_1.Authflow ? options.host : getDefaultAuthflowOptions(options.host),
+            peers: options.peers ? options.peers.map(peer => peer instanceof prismarine_auth_1.Authflow ? peer : getDefaultAuthflowOptions(peer)) : [],
+            world: {
+                hostName: 'Bedrock Portal v1.0.0',
+                name: 'By LucienHH',
+                version: '1.0.0',
+                memberCount: 1,
+                maxMemberCount: 10,
+                isHardcore: false,
+                isEditor: false,
+                ...options.world,
+            },
+        };
+        this.validateOptions(this.options);
+        this.host = new Host_1.default(this, this.options.host instanceof prismarine_auth_1.Authflow ? this.options.host : new prismarine_auth_1.Authflow(this.options.host.username, this.options.host.cache, this.options.host.options, this.options.host.onMsaCode));
+        this.session = { name: '', pmsgId: '', nonces: {} };
+        this.players = new Map();
+        this.peers = new Map();
+        this.modules = new Map();
+    }
+    validateOptions(options) {
+        if (!Object.values(constants_1.Joinability).includes(options.joinability))
+            throw new Error('Invalid joinability - Expected one of ' + Object.keys(constants_1.Joinability).join(', '));
+        if (options.world.memberCount <= 0)
+            throw new Error('Invalid member count - Expected a number greater than 0');
+    }
+    /**
+     * Starts the BedrockPortal instance.
+     */
+    async start() {
+        this.players = new Map();
+        this.session.pmsgId = '';
+        this.session.nonces = {};
+        await this.host.connect();
+        this.session.name = (0, uuid_1.v4)();
+        await this.server.listen(this.host.authflow, this.options.webRTCNetworkId);
+        const pmsgId = this.server.signaling?.pmsgId;
+        if (!pmsgId)
+            throw new Error('Failed to determine signaling pmsgId');
+        this.session.pmsgId = pmsgId;
+        this.server.on('connect', (client) => this.onServerConnection(client));
+        const session = await this.createAndPublishSession();
+        await this.connectPeers();
+        this.host.rta.on('event', (event) => {
+            (0, Event_1.default)(this, event)
+                .catch(e => debug('Failed to handle event', e));
+        });
+        if (this.modules) {
+            for (const mod of this.modules.values()) {
+                mod.run(this)
+                    .then(() => debug(`Module ${mod.name} has run`))
+                    .catch(e => debug(`Module ${mod.name} failed to run`, e));
+            }
+        }
+        this.emit('sessionCreated', session);
+    }
+    /**
+     * Ends the BedrockPortal instance.
+     */
+    async end(resume = false) {
+        if (this.modules) {
+            for (const mod of this.modules.values()) {
+                debug(`Stopping module: ${mod.name}`);
+                await mod.stop();
+            }
+        }
+        await this.disconnectPeers();
+        await this.host.disconnect();
+        debug(`Abandoned session, name: ${this.session.name} - Resume: ${resume}`);
+        if (resume) {
+            return this.start();
+        }
+    }
+    /**
+     * Returns the current members in the session.
+     */
+    getSessionMembers() {
+        return this.players;
+    }
+    getHostAndPeers() {
+        return [this.host, ...this.peers.values()];
+    }
+    /**
+     * Invites a player to the BedrockPortal instance.
+     * @param identifyer The player's gamertag or XUID.
+     */
+    async invitePlayer(identifier) {
+        debug(`Inviting player, identifier: ${identifier}`);
+        if (!(0, util_1.isXuid)(identifier)) {
+            const profile = await this.host.rest.getProfile(identifier)
+                .catch(() => { throw new Error(`Failed to get profile for identifier: ${identifier}`); });
+            identifier = profile.xuid;
+        }
+        await this.host.rest.sendInvite(this.session.name, identifier);
+        debug(`Invited player, xuid: ${identifier}`);
+    }
+    /**
+     * Updates the current member count which is displayed in the Minecraft client.
+     * @param count The new member count.
+     * @param maxCount The new max member count.
+     */
+    async updateMemberCount(count, maxCount) {
+        if (count <= 0)
+            count = 1;
+        await this.host.rest.updateMemberCount(this.session.name, count, maxCount);
+    }
+    /**
+     * Gets the current session of the BedrockPortal instance.
+     */
+    async getSession() {
+        return await this.host.rest.getSession(this.session.name);
+    }
+    /**
+     * Updates the current session of the BedrockPortal instance with the specified payload.
+     * @param payload The payload to update the session with.
+     */
+    async updateSession(payload) {
+        return await this.host.rest.updateSession(this.session.name, payload);
+    }
+    async syncSessionNonces() {
+        const sync = this.nonceSync.then(() => this.syncSessionNoncesInternal());
+        this.nonceSync = sync.then(() => undefined, () => undefined);
+        return await sync;
+    }
+    async syncSessionNoncesInternal() {
+        const hostProfile = this.host.profile;
+        if (!hostProfile) {
+            throw new Error('No session owner');
+        }
+        const session = await this.getSession();
+        const activeXuids = [...new Set(Object.values(session.members)
+                .map(member => member.constants.system.xuid)
+                .filter(xuid => xuid !== hostProfile.xuid))].sort();
+        const nextNonces = Object.fromEntries(activeXuids.map(xuid => [xuid, this.session.nonces[xuid] ?? (0, crypto_1.randomBytes)(8).toString('hex')]));
+        const hasChanges = Object.keys(this.session.nonces).length !== activeXuids.length
+            || activeXuids.some(xuid => this.session.nonces[xuid] !== nextNonces[xuid]);
+        if (!hasChanges) {
+            return session;
+        }
+        const updatedSession = await this.updateSession({
+            properties: {
+                custom: {
+                    nonces: nextNonces,
+                },
+            },
+        });
+        this.session.nonces = nextNonces;
+        return updatedSession;
+    }
+    /**
+     * Enables a module for the BedrockPortal instance.
+     * @see [Modules](https://github.com/LucienHH/bedrock-portal#modules) for a list of available modules or to create your own.
+     * @example
+     * portal.use(Modules.autoFriendAdd)
+     * @example
+     * portal.use(Modules.autoFriendAdd, {
+     *   inviteOnAdd: true
+     * })
+     */
+    use(mod, options) {
+        if (this.host.connectionId)
+            throw new Error('Cannot add modules after the portal has started. Call #.use(...) before calling #.start()');
+        const constructed = new mod(this);
+        debug(`Enabled module: ${constructed.name}`);
+        if (!(constructed instanceof Module_1.default))
+            throw new Error('Module must extend the base module');
+        if (this.modules.has(constructed.name))
+            throw new Error(`Module with name ${constructed.name} has already been loaded`);
+        constructed.applyOptions(options);
+        this.modules.set(constructed.name, constructed);
+    }
+    onServerConnection = (client) => {
+        let nonceValidated = false;
+        client.once('login', () => {
+            const xuid = client.profile?.xuid;
+            const nonce = client.skinData?.Nonce;
+            const expectedNonce = xuid ? this.session.nonces[xuid] : undefined;
+            nonceValidated = typeof nonce === 'string' && nonce.length > 0 && nonce === expectedNonce;
+            if (!nonceValidated) {
+                debug(`Rejected client with invalid session nonce, xuid: ${xuid ?? 'unknown'}`);
+                client.disconnect('Server authentication error');
+            }
+        });
+        client.on('join', () => {
+            if (!nonceValidated) {
+                client.disconnect('Server authentication error');
+                return;
+            }
+            client.write('resource_packs_info', {
+                must_accept: false,
+                has_addons: false,
+                has_scripts: false,
+                disable_vibrant_visuals: false,
+                world_template: {
+                    uuid: '',
+                    version: '',
+                },
+                texture_packs: [],
+            });
+            const onResourcePackResponse = (response) => {
+                if (response.response_status === 'refused') {
+                    client.off('resource_pack_client_response', onResourcePackResponse);
+                    client.disconnect('Resource packs refused');
+                    return;
+                }
+                if (response.response_status === 'send_packs' || response.response_status === 'have_all_packs') {
+                    client.write('resource_pack_stack', {
+                        must_accept: false,
+                        resource_packs: [],
+                        game_version: '*',
+                        experiments: [],
+                        experiments_previously_used: false,
+                        has_editor_packs: false,
+                    });
+                    return;
+                }
+                if (response.response_status !== 'completed')
+                    return;
+                client.off('resource_pack_client_response', onResourcePackResponse);
+                client.once('request_chunk_radius', () => {
+                    client.write('transfer', {
+                        server_address: this.options.ip,
+                        port: this.options.port,
+                        reload_world: false,
+                        gatherings_configuration: undefined,
+                    });
+                });
+                (0, start_game_1.sendStartGame)(client);
+            };
+            client.on('resource_pack_client_response', onResourcePackResponse);
+        });
+    };
+    async createAndPublishSession() {
+        await this.updateSession(this.createSessionBody());
+        debug(`Created session, name: ${this.session.name}, ID: ${this.options.webRTCNetworkId}`);
+        await this.host.rest.setActivity(this.session.name);
+        const session = await this.getSession();
+        await this.updateSession({ properties: session.properties });
+        debug(`Published session, name: ${this.session.name}, ID: ${this.options.webRTCNetworkId}`);
+        return session;
+    }
+    async connectPeers() {
+        for (const account of this.options.peers) {
+            let peer = null;
+            try {
+                peer = new Host_1.default(this, account instanceof prismarine_auth_1.Authflow ? account : new prismarine_auth_1.Authflow(account.username, account.cache, account.options, account.onMsaCode));
+                await peer.connect();
+                if (!peer.profile || !peer.connectionId) {
+                    throw Error(`Failed to connect to ${account.username}`);
+                }
+                debug(`Connected ${peer.profile.gamertag}`);
+                const hostAddPeer = await this.host.rest.addXboxFriend(peer.profile.xuid)
+                    .then(() => null)
+                    .catch(error => error);
+                const peerAddHost = await peer.rest.addXboxFriend(this.host.profile.xuid)
+                    .then(() => null)
+                    .catch(error => error);
+                if (hostAddPeer || peerAddHost) {
+                    if (hostAddPeer)
+                        debug(`Failed to add ${peer.profile.gamertag} as a friend - ${hostAddPeer.message}`);
+                    if (peerAddHost)
+                        debug(`Failed to add ${this.host.profile.gamertag} as a friend - ${peerAddHost.message}`);
+                    throw Error(`Failed to create friendship between ${this.host.profile.gamertag} and ${peer.profile.gamertag}`);
+                }
+                await peer.rest.addConnection(this.session.name, peer.profile.xuid, peer.connectionId, peer.subscriptionId);
+                await peer.rest.setActivity(this.session.name);
+                this.peers.set(peer.profile.xuid, peer);
+            }
+            catch (error) {
+                debug(`Failed to initialise ${account.username} - ${error.message}`);
+                if (peer) {
+                    await peer.disconnect()
+                        .catch((err) => debug(`Failed to disconnect ${peer?.authflow.username ?? account.username}`, err));
+                }
+            }
+        }
+    }
+    async disconnectPeers() {
+        for (const peer of this.peers.values()) {
+            await peer.disconnect()
+                .catch((err) => debug(`Failed to disconnect ${peer.authflow.username}`, err));
+        }
+        this.peers.clear();
+    }
+    createSessionBody() {
+        if (!this.host.profile || !this.host.connectionId)
+            throw new Error('No session owner');
+        if (!this.session.pmsgId)
+            throw new Error('No session connection payload id');
+        const joinability = constants_1.JoinabilityConfig[this.options.joinability];
+        return {
+            properties: {
+                system: {
+                    joinRestriction: joinability.joinRestriction,
+                    readRestriction: 'followed',
+                    closed: false,
+                },
+                custom: {
+                    hostName: String(this.options.world.hostName),
+                    worldName: String(this.options.world.name),
+                    version: String(this.options.world.version),
+                    MemberCount: Number(this.options.world.memberCount),
+                    MaxMemberCount: Number(this.options.world.maxMemberCount),
+                    Joinability: joinability.joinability,
+                    ownerId: this.host.profile.xuid,
+                    rakNetGUID: '',
+                    worldType: 'Survival',
+                    protocol: constants_1.SessionConfig.MinecraftProtocolVersion,
+                    BroadcastSetting: joinability.broadcastSetting,
+                    OnlineCrossPlatformGame: true,
+                    CrossPlayDisabled: false,
+                    TitleId: 0,
+                    TransportLayer: 2,
+                    LanGame: true,
+                    WebRTCNetworkId: this.options.webRTCNetworkId,
+                    isHardcore: this.options.world.isHardcore,
+                    isEditorWorld: this.options.world.isEditor,
+                    nonces: this.session.nonces,
+                    SupportedConnections: [
+                        {
+                            ConnectionType: 7,
+                            HostIpAddress: '',
+                            HostPort: 0,
+                            NetherNetId: this.options.webRTCNetworkId,
+                            PmsgId: this.session.pmsgId,
+                        },
+                    ],
+                },
+            },
+            members: {
+                me: {
+                    constants: {
+                        system: {
+                            xuid: this.host.profile.xuid,
+                            initialize: true,
+                        },
+                    },
+                    properties: {
+                        system: {
+                            active: true,
+                            connection: this.host.connectionId,
+                            subscription: {
+                                id: this.host.subscriptionId,
+                                changeTypes: ['everything'],
+                            },
+                        },
+                    },
+                },
+            },
+        };
+    }
+}
+exports.BedrockPortal = BedrockPortal;
+// Export joinability
+var constants_2 = require("./common/constants");
+Object.defineProperty(exports, "Joinability", { enumerable: true, get: function () { return constants_2.Joinability; } });
+const Modules = {
+    AutoFriendAdd: autoFriendAdd_1.default,
+    InviteOnMessage: inviteOnMessage_1.default,
+    RedirectFromRealm: redirectFromRealm_1.default,
+    AutoFriendAccept: autoFriendAccept_1.default,
+    UpdateMemberCount: updateMemberCount_1.default,
+    ServerFromList: serverFormList_1.default,
+};
+exports.Modules = Modules;

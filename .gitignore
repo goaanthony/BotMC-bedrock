@@ -1,0 +1,14 @@
+# Fichiers sensibles
+.env
+.env.*
+!.env.example
+auth_cache/
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

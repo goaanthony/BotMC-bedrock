@@ -1,0 +1,23 @@
+{
+  "name": "mc-bedrock-gateway",
+  "version": "1.0.0",
+  "description": "Passerelle automatique vers un serveur Minecraft Bedrock via Xbox Live / NetherNet",
+  "main": "src/portal.js",
+  "type": "module",
+  "scripts": {
+    "start":      "node src/portal.js",
+    "dev":        "node --watch src/portal.js",
+    "friends":    "node src/friend-only.js",
+    "friends:dev":"node --watch src/friend-only.js"
+  },
+  "dependencies": {
+    "bedrock-portal":   "^2.8.2",
+    "bedrock-protocol": "^3.42.0",
+    "dotenv":           "^16.4.5",
+    "node-fetch":       "^3.3.2",
+    "prismarine-auth":  "^2.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
