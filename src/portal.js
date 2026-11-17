@@ -9,8 +9,9 @@
  *   4. Les demandes d'amis sont acceptées instantanément (Xbox RTA) et les
  *      followers sont ajoutés en retour.
  *
- * La session reste ouverte en permanence : plusieurs joueurs peuvent se
- * connecter et être transférés à la suite sans la recréer.
+ * Après chaque transfert, une nouvelle session est publiée (dès que personne
+ * n'est en cours de connexion) : sans ça, un joueur déjà transféré une fois
+ * ne pourrait plus rejoindre.
  */
 
 import { Modules } from 'bedrock-portal'
@@ -36,6 +37,8 @@ const dashboard = new Dashboard({
   autoFriendAdd: config.autoFriendAdd,
 })
 
+const REFRESH_DELAY_MS = 3000
+
 const name = (player) => player?.profile?.gamertag ?? player?.profile?.xuid ?? 'Joueur'
 
 function buildPortal() {
@@ -59,20 +62,46 @@ function buildPortal() {
     portal.use(Modules.AutoFriendAdd, { inviteOnAdd: true })
   }
 
+  // ── Rafraîchissement de la session après un transfert ─────────────────
+  // Une fois transféré, un joueur ne peut pas rejoindre une 2e fois la même
+  // session Xbox. On publie donc une session neuve dès que plus personne n'est
+  // en train de se connecter (sinon on couperait sa connexion).
+  let refreshTimer = null
+  let lastJoinAt   = 0
+  let needsRefresh = false
+  const scheduleRefresh = () => {
+    needsRefresh = true
+    clearTimeout(refreshTimer)
+    refreshTimer = setTimeout(() => {
+      const busy = portal.server.clientCount > 0 || Date.now() - lastJoinAt < REFRESH_DELAY_MS
+      if (portal.restarting) return
+      if (busy) return scheduleRefresh()
+      needsRefresh = false
+      portal.restart('Joueur transféré')
+    }, REFRESH_DELAY_MS)
+  }
+
   // ── Événements Xbox Live ──────────────────────────────────────────────
   portal.on('friendAdded',   (p) => dashboard.friendAccepted(name(p), p?.profile?.xuid ?? '?'))
   portal.on('friendRemoved', (p) => dashboard.friendRemoved(name(p)))
-  portal.on('playerJoin',    (p) => dashboard.playerJoined(name(p)))
-  portal.on('playerLeave',   (p) => dashboard.playerLeft(name(p)))
+  portal.on('playerJoin',    (p) => { lastJoinAt = Date.now(); dashboard.playerJoined(name(p)) })
+  portal.on('playerLeave',   (p) => {
+    dashboard.playerLeft(name(p))
+    if (needsRefresh) scheduleRefresh()
+  })
 
   // ── Événements réseau (NetherNet) : suivi réel du transfert ───────────
   // Ce listener est attaché une seule fois : `portal.server` survit aux redémarrages.
   portal.server.on('connect', (client) => {
-    client.once('login', () => dashboard.playerConnecting(client.profile?.name ?? 'Joueur'))
+    const who = () => client.profile?.name ?? 'Joueur'
+    let transferred = false
+    client.once('login', () => dashboard.playerConnecting(who()))
     // bedrock-portal envoie le paquet `transfer` à la réception de request_chunk_radius
     client.once('request_chunk_radius', () => {
-      setImmediate(() => dashboard.playerTransferred(client.profile?.name ?? 'Joueur'))
+      transferred = true
+      setImmediate(() => dashboard.playerTransferred(who()))
     })
+    client.once('close', () => { if (transferred) scheduleRefresh() })
   })
 
   return portal

@@ -55,11 +55,13 @@ export class GatewayPortal extends BedrockPortal {
     return this.restart()
   }
 
+  get restarting() { return this.#restarting !== null }
+
   /** (2) Redémarre la session une seule fois à la fois, en réessayant jusqu'à réussite. */
-  restart() {
+  restart(reason = 'Session Xbox perdue') {
     if (this.#restarting) return this.#restarting
     this.#restarting = (async () => {
-      this.log('warn', 'Session Xbox perdue — recréation...')
+      this.log('info', `${reason} — recréation de la session...`)
       await super.end(false).catch(err => this.log('warn', `Abandon de l'ancienne session : ${err.message}`))
 
       for (let attempt = 1; !this.#stopped; attempt++) {
