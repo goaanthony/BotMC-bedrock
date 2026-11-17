@@ -1,6 +1,6 @@
 /**
  * Socle commun aux commandes longues (passerelle, amis) : logger, stats,
- * résumé périodique, arrêt propre et filets de sécurité.
+ * résumé périodique, arrêt propre, raccourcis clavier et filets de sécurité.
  */
 
 import fs from 'node:fs'
@@ -8,6 +8,8 @@ import path from 'node:path'
 import { Logger, describe } from './logger.js'
 import { Stats } from './stats.js'
 import { summaryLine } from './ui.js'
+import { renderDetails, renderPlayers, KEYS_HELP } from './panels.js'
+import { attachKeys } from './keys.js'
 import { ROOT } from './config.js'
 
 export const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version
@@ -68,5 +70,23 @@ export function createRuntime(config, meta = {}) {
     cleanups.push(() => clearInterval(t))
   }
 
-  return { log, stats, stop, onStop: (fn) => cleanups.push(fn) }
+  /**
+   * Active les raccourcis clavier (terminal interactif seulement).
+   * @param {Record<string, () => void>} [extra] touches propres au mode (ex. r)
+   */
+  const interactive = (extra = {}) => {
+    if (!process.stdin.isTTY) return
+    const handlers = {
+      e: () => renderDetails(log, stats.snapshot()),
+      j: () => renderPlayers(log, stats.snapshot()),
+      c: () => process.stdout.write('\x1b[2J\x1b[3J\x1b[H'),
+      h: () => log.raw(`\n${KEYS_HELP}\n`),
+      ...extra,
+    }
+    const detach = attachKeys(handlers, () => stop('Ctrl+C'))
+    cleanups.push(detach)
+    log.raw(`\n${KEYS_HELP}\n`)
+  }
+
+  return { log, stats, stop, interactive, onStop: (fn) => cleanups.push(fn) }
 }

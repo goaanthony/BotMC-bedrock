@@ -10,7 +10,7 @@ import { banner } from '../core/ui.js'
 import { FriendManager } from './FriendManager.js'
 
 export async function runFriends(config) {
-  const { log, stats, stop, onStop } = createRuntime(config)
+  const { log, stats, stop, interactive, onStop } = createRuntime(config)
   banner(log, config, VERSION)
 
   const authflow = createAuthflow(config, log)
@@ -34,4 +34,5 @@ export async function runFriends(config) {
   stats.setState('online')
   log.info('xbox', `Connecté en tant que ${gamertag ?? config.auth.username}`)
   log.info('friend', 'En écoute des demandes d\'amis')
+  interactive()
 }

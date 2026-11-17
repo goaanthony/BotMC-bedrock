@@ -32,7 +32,9 @@ usage() {
 ${B}botmc${R} — gestion de la passerelle Minecraft Bedrock
 
   ${CYN}start | stop | restart${R}   démarre, arrête ou redémarre le bot
-  ${CYN}status${R}                   état, statistiques et derniers événements
+  ${CYN}console${R}                  logs en direct + touches (E infos, J joueurs, R session)
+  ${CYN}stats${R}                    infos détaillées : joueurs du jour, plateformes, temps…
+  ${CYN}status${R}                   état et derniers événements
   ${CYN}logs${R} [-n N]              logs en direct (journal systemd)
   ${CYN}logs file${R}                fichier de log du jour (avec stack traces)
   ${CYN}logs errors${R}              uniquement les avertissements et erreurs
@@ -71,6 +73,16 @@ case $cmd in
     cli status || true
     systemctl --no-pager --lines=0 status "$SERVICE" 2>/dev/null | sed -n '1,3p' || true
     echo
+    ;;
+
+  console)
+    need_root console "$@"
+    cli console
+    ;;
+
+  stats)
+    need_root stats "$@"
+    cli stats
     ;;
 
   logs)

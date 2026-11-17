@@ -44,7 +44,9 @@ Aucun port à ouvrir : la passerelle n'utilise que des connexions sortantes (Xbo
 
 | Commande               | Rôle                                                        |
 |------------------------|-------------------------------------------------------------|
-| `botmc status`         | état, statistiques, joueurs actifs, derniers événements     |
+| `botmc console`        | logs en direct + touches **E** (infos), **J** (joueurs), **R** (session) |
+| `botmc stats`          | infos détaillées du jour (voir plus bas)                    |
+| `botmc status`         | état et derniers événements                                 |
 | `botmc logs`           | logs en direct (Ctrl+C pour quitter)                        |
 | `botmc logs errors`    | avertissements et erreurs seulement                         |
 | `botmc logs file`      | fichier de log du jour, avec les stack traces               |
@@ -66,7 +68,7 @@ npm run login           # connecte le compte Xbox du bot
 npm start
 ```
 
-Autres scripts : `npm run status`, `npm run check`, `npm run friends`, `npm test`, `npm run lint`.
+Autres scripts : `npm run stats`, `npm run console`, `npm run status`, `npm run check`, `npm run friends`, `npm test`, `npm run lint`.
 
 ## Configuration (`.env`)
 
@@ -100,6 +102,22 @@ Autres scripts : `npm run status`, `npm run check`, `npm run friends`, `npm test
 - **Catégories** : `SYSTÈME`, `XBOX`, `SESSION`, `JOUEUR`, `TRANSFERT`, `AMIS`, `STATS`, et `LIB` pour les logs internes de bedrock-portal / Xbox (visibles en `LOG_LEVEL=debug`).
 - **Statistiques** : transferts, joueurs uniques, amis acceptés, sessions recréées, erreurs. Résumé périodique dans les logs et `botmc status` à tout moment.
 
+## Infos détaillées (touche E)
+
+Dans la console du bot (lancé à la main ou avec `botmc debug`), ou dans `botmc console` quand il tourne en service :
+
+| Touche | Action |
+|--------|--------|
+| **E** | infos détaillées : joueurs uniques du jour, connexions, taux de réussite, temps de transfert (moyenne, médiane, 95 %, max), temps entre le clic « Rejoindre » et l'arrivée sur le serveur, plateformes, contrôles (manette, tactile, clavier), versions du jeu, langues, activité heure par heure, joueurs du jour, cumul depuis l'installation, record, état du système |
+| **J** | liste des joueurs du jour avec plateforme, contrôles, version et dernier passage |
+| **R** | recrée la session Xbox tout de suite |
+| **C** | efface l'écran |
+| **H** | aide |
+
+`botmc stats` affiche le même panneau que **E** sans ouvrir la console. Les chiffres sont enregistrés dans `data/status.json` et ne repartent pas de zéro quand le bot redémarre ; l'historique garde 30 jours.
+
+La plateforme, les contrôles et la version viennent des infos envoyées par le jeu à la connexion.
+
 ## Mode BDS (alternatif)
 
 Si tu héberges un Bedrock Dedicated Server qui sert de lobby, `BOT_MODE=friends` gère seulement les demandes d'amis du compte bot, sans publier de session. Le behavior pack de `bds-pack/` ajoute la commande `/gateway:t` qui transfère le joueur : modifie `TARGET_HOST`/`TARGET_PORT` en haut de `bds-pack/scripts/main.js`.
@@ -112,11 +130,15 @@ scripts/
 ├── botmc                   commande de gestion (installée dans /usr/local/bin)
 └── botmc.service           modèle du service systemd
 src/
-├── cli.js                  point d'entrée : start, gateway, friends, login, status, check
+├── cli.js                  point d'entrée : start, gateway, friends, login, status, stats, console, check
+├── console.js              « botmc console » : logs en direct + touches
 ├── core/
 │   ├── config.js           lecture et validation du .env
 │   ├── logger.js           logs console + fichiers avec rotation
-│   ├── stats.js            statistiques et fichier d'état
+│   ├── stats.js            statistiques (jour, cumul) et fichier d'état
+│   ├── panels.js           panneaux E (infos détaillées) et J (joueurs)
+│   ├── client-info.js      plateforme / contrôles / version d'un joueur
+│   ├── keys.js             raccourcis clavier
 │   ├── ui.js               bannière, encadrés, rendu de « status »
 │   ├── runtime.js          arrêt propre, résumés périodiques, filets de sécurité
 │   └── auth.js             connexion Xbox du compte bot

@@ -9,6 +9,8 @@
  *   friends   acceptation des amis seulement (BDS)
  *   login     connecte (ou reconnecte avec --force) le compte Xbox du bot
  *   status    affiche l'état du bot en cours d'exécution
+ *   stats     infos détaillées (joueurs du jour, plateformes, temps de transfert…)
+ *   console   logs en direct + raccourcis clavier, pour un bot lancé en service
  *   check     vérifie la configuration (.env)
  */
 
@@ -17,6 +19,7 @@ import path from 'node:path'
 import { loadConfig, ConfigError } from './core/config.js'
 import { Logger, ANSI as A, describe } from './core/logger.js'
 import { renderStatus } from './core/ui.js'
+import { renderDetails } from './core/panels.js'
 
 const USAGE = `
 ${A.bold}BotMC${A.reset} — passerelle Minecraft Bedrock via Xbox Live
@@ -28,6 +31,8 @@ ${A.bold}Usage :${A.reset} node src/cli.js <commande> [options]
   ${A.cyan}friends${A.reset}          acceptation des demandes d'amis seulement (BDS)
   ${A.cyan}login${A.reset} [--force]  connecte le compte Xbox du bot (--force : reconnecte)
   ${A.cyan}status${A.reset}           état du bot en cours d'exécution
+  ${A.cyan}stats${A.reset}            infos détaillées : joueurs, plateformes, temps de transfert…
+  ${A.cyan}console${A.reset}          logs en direct + touches (E infos, J joueurs, R session)
   ${A.cyan}check${A.reset}            vérifie la configuration
   ${A.cyan}help${A.reset}             affiche cette aide
 `
@@ -65,8 +70,8 @@ async function login(force) {
   console$.raw(`  ${A.dim}Jetons enregistrés dans ${cfg.auth.cache}${A.reset}`)
 }
 
-function status() {
-  const cfg = config({ requireTarget: false })
+/** Lit data/status.json et vérifie si le process du bot tourne encore */
+function readStatus(cfg) {
   const file = path.join(cfg.dataDir, 'status.json')
   let s
   try {
@@ -78,7 +83,17 @@ function status() {
   if (alive) {
     try { process.kill(s.pid, 0) } catch (err) { alive = err.code === 'EPERM' }
   }
+  return { s, alive }
+}
+
+function status() {
+  const { s, alive } = readStatus(config({ requireTarget: false }))
   renderStatus(console$, s, { alive })
+}
+
+function stats() {
+  const { s, alive } = readStatus(config({ requireTarget: false }))
+  renderDetails(console$, s, { alive })
 }
 
 function check() {
@@ -114,6 +129,8 @@ async function main(argv) {
     }
     case 'login':   return login(args.includes('--force'))
     case 'status':  return status()
+    case 'stats':   return stats()
+    case 'console': return (await import('./console.js')).runConsole(config({ requireTarget: false }))
     case 'check':   return check()
     case 'help': case '--help': case '-h':
       return console$.raw(USAGE)

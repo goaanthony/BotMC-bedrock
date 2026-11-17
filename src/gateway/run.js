@@ -12,17 +12,19 @@
  */
 
 import { Modules } from 'bedrock-portal'
-import { describe } from '../core/logger.js'
+import { describe, ANSI as A } from '../core/logger.js'
+import { formatMs } from '../core/stats.js'
 import { createRuntime, VERSION } from '../core/runtime.js'
 import { portalHostOptions } from '../core/auth.js'
 import { banner } from '../core/ui.js'
 import { GatewayPortal } from './GatewayPortal.js'
 import { SessionRefresher } from './SessionRefresher.js'
+import { describeClient } from '../core/client-info.js'
 
 const gamertagOf = (player) => player?.profile?.gamertag ?? player?.profile?.xuid ?? 'Joueur'
 
 export async function runGateway(config) {
-  const { log, stats, stop, onStop } = createRuntime(config)
+  const { log, stats, stop, interactive, onStop } = createRuntime(config)
   banner(log, config, VERSION)
 
   const portal = new GatewayPortal({
@@ -67,30 +69,51 @@ export async function runGateway(config) {
   })
 
   // ── Joueurs (session Xbox) ─────────────────────────────────────────────
+  // Heure du clic « Rejoindre » par XUID, pour mesurer le temps total jusqu'au serveur
+  const joinedAt = new Map()
   portal.on('playerJoin', (p) => {
     stats.inc('joins')
     refresher.noteJoin()
+    if (p?.profile?.xuid) joinedAt.set(String(p.profile.xuid), Date.now())
     log.info('player', `${gamertagOf(p)} a cliqué « Rejoindre »`)
   })
-  portal.on('playerLeave', (p) => log.debug('player', `${gamertagOf(p)} a quitté la session Xbox`))
+  portal.on('playerLeave', (p) => {
+    // garde l'entrée quelques secondes : le départ de session peut précéder le transfert
+    const xuid = p?.profile?.xuid && String(p.profile.xuid)
+    if (xuid) setTimeout(() => joinedAt.delete(xuid), 30_000).unref()
+    log.debug('player', `${gamertagOf(p)} a quitté la session Xbox`)
+  })
 
   // ── Connexions NetherNet : suivi réel du transfert ─────────────────────
   // Attaché une seule fois : `portal.server` survit aux redémarrages.
   portal.server.on('connect', (client) => {
     const who = () => client.profile?.name ?? 'Joueur'
     const t0 = Date.now()
+    let info = null
     let transferred = false
-    client.once('login', () => log.debug('player', `${who()} connecté à la passerelle (${client.version ?? '?'})`))
+
+    client.once('login', () => {
+      info = describeClient(client.skinData)
+      stats.connection({ gamertag: who(), xuid: client.profile?.xuid, ...info })
+      log.info('player', `${who()} se connecte  ${A.dim}${info.platform} · ${info.input} · ${info.version}${A.reset}`)
+    })
     // bedrock-portal envoie le paquet `transfer` à la réception de request_chunk_radius
     client.once('request_chunk_radius', () => {
       transferred = true
       setImmediate(() => {
-        stats.transfer(who())
-        log.info('transfer', `${who()} → ${config.targetHost}:${config.targetPort}  (${Date.now() - t0} ms)`)
+        const ms = Date.now() - t0
+        const xuid = String(client.profile?.xuid ?? '')
+        const clickedAt = joinedAt.get(xuid)
+        joinedAt.delete(xuid)
+        const totalMs = clickedAt ? Date.now() - clickedAt : null
+        stats.transfer(who(), { ms, totalMs, platform: info?.platform })
+        const timing = totalMs ? `${formatMs(ms)}, ${formatMs(totalMs)} depuis le clic` : formatMs(ms)
+        log.info('transfer', `${who()} → ${config.targetHost}:${config.targetPort}  ${A.dim}(${timing})${A.reset}`)
       })
     })
     client.once('close', () => {
       if (transferred) return refresher.request()
+      stats.failure()
       log.warn('player', `${who()} s'est déconnecté avant le transfert`)
     })
   })
@@ -113,4 +136,12 @@ export async function runGateway(config) {
 
   onStop(() => refresher.stop())
   onStop(() => portal.end())
+
+  // Recréation manuelle : touche R, ou « botmc console » (signal SIGUSR2)
+  const manualRefresh = () => {
+    if (portal.restarting) return log.info('session', 'Une recréation est déjà en cours')
+    portal.restart('Demande manuelle')
+  }
+  process.on('SIGUSR2', manualRefresh)
+  interactive({ r: manualRefresh })
 }

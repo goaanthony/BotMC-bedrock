@@ -18,7 +18,7 @@ const ANSI = {
 }
 
 /** Catégories d'événements : libellé affiché et couleur */
-const CATEGORIES = {
+export const CATEGORIES = {
   system:   { label: 'SYSTÈME',   color: ANSI.blue },
   xbox:     { label: 'XBOX',      color: ANSI.green },
   session:  { label: 'SESSION',   color: ANSI.cyan },
@@ -29,7 +29,7 @@ const CATEGORIES = {
   lib:      { label: 'LIB',       color: ANSI.gray },
 }
 
-const LEVEL_STYLE = {
+export const LEVEL_STYLE = {
   debug: { icon: '·', color: ANSI.gray,   label: 'DBG' },
   info:  { icon: '•', color: ANSI.white,  label: 'INF' },
   warn:  { icon: '▲', color: ANSI.yellow, label: 'WRN' },
@@ -93,6 +93,22 @@ export class DailyFile {
   }
 }
 
+/** Catégorie à partir de sa clé (« transfer ») ou de son libellé (« TRANSFERT ») */
+export function findCategory(keyOrLabel) {
+  return CATEGORIES[keyOrLabel]
+    ?? Object.values(CATEGORIES).find(c => c.label === keyOrLabel)
+    ?? { label: String(keyOrLabel).toUpperCase(), color: ANSI.white }
+}
+
+/** Ligne colorée « 17:12:56 • TRANSFERT  message » */
+export function prettyLine(time, level, category, message) {
+  const cat = findCategory(category)
+  const lvl = LEVEL_STYLE[level] ?? LEVEL_STYLE.info
+  const msgColor = level === 'info' ? '' : lvl.color
+  return `${ANSI.dim}${time}${ANSI.reset} ${lvl.color}${lvl.icon}${ANSI.reset} ` +
+    `${cat.color}${ANSI.bold}${cat.label.padEnd(10)}${ANSI.reset} ${msgColor}${message}${ANSI.reset}`
+}
+
 export class Logger {
   /**
    * @param {object} opts
@@ -123,7 +139,7 @@ export class Logger {
   log(level, category, message, extra) {
     const now = new Date()
     const err = extra instanceof Error ? extra : null
-    const entry = { time: now.toISOString(), level, category, message }
+    const entry = { time: now.toISOString(), level, category, message: stripAnsi(message) }
     if (err) entry.error = err.stack ?? String(err)
     else if (extra !== undefined) entry.data = extra
 
@@ -131,7 +147,7 @@ export class Logger {
 
     // Fichier : tout à partir du niveau configuré, stack trace comprise
     if (this.file && LEVELS[level] >= this.level) {
-      const base = `${localDate(now)} ${localTime(now)} ${LEVEL_STYLE[level].label} [${CATEGORIES[category]?.label ?? category}] ${stripAnsi(message)}`
+      const base = `${localDate(now)} ${localTime(now)} ${LEVEL_STYLE[level].label} [${findCategory(category).label}] ${entry.message}`
       this.file.write(err ? `${base}\n${entry.error}` : base, now)
     }
 
@@ -142,19 +158,11 @@ export class Logger {
       return
     }
 
-    const cat = CATEGORIES[category] ?? { label: category.toUpperCase(), color: ANSI.white }
-    const lvl = LEVEL_STYLE[level]
-    const tag = cat.label.padEnd(10)
-
     if (this.format === 'plain') {
-      // journald ajoute déjà la date : on garde l'heure pour les fichiers copiés-collés
-      this.out.write(`${lvl.label} [${tag}] ${stripAnsi(message)}\n`)
+      // journald ajoute déjà la date et l'heure
+      this.out.write(`${LEVEL_STYLE[level].label} [${findCategory(category).label.padEnd(10)}] ${entry.message}\n`)
     } else {
-      const msgColor = level === 'info' ? '' : lvl.color
-      this.out.write(
-        `${ANSI.dim}${localTime(now)}${ANSI.reset} ${lvl.color}${lvl.icon}${ANSI.reset} ` +
-        `${cat.color}${ANSI.bold}${tag}${ANSI.reset} ${msgColor}${message}${ANSI.reset}\n`,
-      )
+      this.out.write(prettyLine(localTime(now), level, category, message) + '\n')
     }
     if (err && this.level <= LEVELS.debug) this.out.write(`${ANSI.dim}${entry.error}${ANSI.reset}\n`)
   }

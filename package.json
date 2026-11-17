@@ -1,6 +1,6 @@
 {
   "name": "botmc-bedrock",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "description": "Passerelle Minecraft Bedrock : rejoindre un serveur depuis l'onglet Amis Xbox Live",
   "type": "module",
@@ -11,6 +11,8 @@
     "friends": "node src/cli.js friends",
     "login": "node src/cli.js login",
     "status": "node src/cli.js status",
+    "stats": "node src/cli.js stats",
+    "console": "node src/cli.js console",
     "check": "node src/cli.js check",
     "dev": "node --watch src/cli.js start",
     "test": "node --test",
