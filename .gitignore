@@ -1,14 +1,17 @@
-# Fichiers sensibles
+# Secrets
 .env
 .env.*
 !.env.example
 auth_cache/
+
+# Données d'exécution
 node_modules/
-
-# Logs
-*.log
 logs/
+data/
+*.log
 
-# OS
+# OS / éditeurs
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

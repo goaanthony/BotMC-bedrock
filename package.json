@@ -1,22 +1,34 @@
 {
-  "name": "mc-bedrock-gateway",
-  "version": "1.0.0",
-  "description": "Passerelle automatique vers un serveur Minecraft Bedrock via Xbox Live / NetherNet",
-  "main": "src/portal.js",
+  "name": "botmc-bedrock",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Passerelle Minecraft Bedrock : rejoindre un serveur depuis l'onglet Amis Xbox Live",
   "type": "module",
+  "main": "src/cli.js",
   "scripts": {
-    "start": "node src/portal.js",
-    "dev": "node --watch src/portal.js",
-    "friends": "node src/friend-only.js",
-    "friends:dev": "node --watch src/friend-only.js"
+    "start": "node src/cli.js start",
+    "gateway": "node src/cli.js gateway",
+    "friends": "node src/cli.js friends",
+    "login": "node src/cli.js login",
+    "status": "node src/cli.js status",
+    "check": "node src/cli.js check",
+    "dev": "node --watch src/cli.js start",
+    "test": "node --test",
+    "lint": "eslint ."
   },
   "dependencies": {
     "bedrock-portal": "^2.8.2",
-    "dotenv": "^16.4.5",
+    "debug": "^4.4.3",
+    "dotenv": "^16.6.1",
     "prismarine-auth": "^3.1.1",
     "xbox-rta": "^2.2.0"
   },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0"
+  },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20"
   }
 }

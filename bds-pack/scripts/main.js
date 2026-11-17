@@ -17,7 +17,7 @@ function transferPlayer(player) {
     console.error(`[Gateway] Erreur de transfert pour ${player.name}: ${err}`);
     try {
       player.sendMessage("\u00a7c[Passerelle] \u00a7fEchec du transfert. Reessaie avec /gateway:t");
-    } catch (_) {}
+    } catch { /* joueur déjà déconnecté */ }
   }
 }
 
@@ -66,7 +66,7 @@ world.afterEvents.playerSpawn.subscribe((event) => {
       player.sendMessage(" \u00a7fTape \u00a7e/gateway:t\u00a7f pour rejoindre");
       player.sendMessage(" \u00a7fle serveur principal.");
       player.sendMessage("\u00a76===================================\n");
-    } catch (_) {}
+    } catch { /* joueur déjà déconnecté */ }
   }, 20);
 });
 

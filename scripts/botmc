@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════
+#  botmc — gestion du bot BotMC installé par install.sh
+#  (les valeurs @...@ sont remplacées à l'installation)
+# ═══════════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+INSTALL_DIR="@INSTALL_DIR@"
+BOT_USER="@BOT_USER@"
+NODE_BIN="@NODE_BIN@"
+SERVICE="@SERVICE@"
+ENV_FILE="$INSTALL_DIR/.env"
+
+if [[ -t 1 ]]; then B=$'\e[1m' D=$'\e[2m' R=$'\e[0m' RED=$'\e[31m' GRN=$'\e[32m' CYN=$'\e[36m'
+else B='' D='' R='' RED='' GRN='' CYN=''; fi
+
+die() { printf '%s✖ %s%s\n' "$RED" "$*" "$R" >&2; exit 1; }
+
+# Relance la commande avec sudo si besoin (systemctl, lecture du .env…)
+need_root() { [[ $EUID -eq 0 ]] || exec sudo -- "$0" "$@"; }
+
+# Exécute la CLI Node en tant qu'utilisateur du bot, avec la config installée
+cli() {
+  cd "$INSTALL_DIR"
+  if [[ $(id -un) == "$BOT_USER" ]]; then "$NODE_BIN" src/cli.js "$@"
+  else runuser -u "$BOT_USER" -- env HOME="$INSTALL_DIR" "$NODE_BIN" src/cli.js "$@"; fi
+}
+
+usage() {
+  cat <<EOF
+
+${B}botmc${R} — gestion de la passerelle Minecraft Bedrock
+
+  ${CYN}start | stop | restart${R}   démarre, arrête ou redémarre le bot
+  ${CYN}status${R}                   état, statistiques et derniers événements
+  ${CYN}logs${R} [-n N]              logs en direct (journal systemd)
+  ${CYN}logs file${R}                fichier de log du jour (avec stack traces)
+  ${CYN}logs errors${R}              uniquement les avertissements et erreurs
+  ${CYN}login${R} [--force]          connecte (ou change) le compte Xbox du bot
+  ${CYN}config${R}                   modifie la configuration puis redémarre
+  ${CYN}check${R}                    vérifie la configuration
+  ${CYN}debug${R}                    lance le bot au premier plan en mode debug
+  ${CYN}update${R}                   met à jour depuis le dépôt git source
+  ${CYN}uninstall${R}                désinstalle BotMC
+  ${CYN}version${R}                  version installée
+
+${D}Installé dans $INSTALL_DIR — service « $SERVICE »${R}
+
+EOF
+}
+
+cmd=${1:-help}
+[[ $# -gt 0 ]] && shift
+
+case $cmd in
+  start|stop|restart)
+    need_root "$cmd" "$@"
+    systemctl "$cmd" "$SERVICE"
+    if [[ $cmd != stop ]]; then
+      sleep 2
+      systemctl is-active --quiet "$SERVICE" \
+        && printf '%s✔ BotMC %s%s\n' "$GRN" "$([[ $cmd == start ]] && echo démarré || echo redémarré)" "$R" \
+        || die "Le bot ne tourne pas : « botmc logs » pour voir pourquoi"
+    else
+      printf '%s✔ BotMC arrêté%s\n' "$GRN" "$R"
+    fi
+    ;;
+
+  status)
+    need_root status "$@"
+    cli status || true
+    systemctl --no-pager --lines=0 status "$SERVICE" 2>/dev/null | sed -n '1,3p' || true
+    echo
+    ;;
+
+  logs)
+    need_root logs "$@"
+    case ${1:-} in
+      file)
+        f=$(ls -1t "$INSTALL_DIR"/logs/botmc-*.log 2>/dev/null | head -1) || true
+        [[ -n ${f:-} ]] || die "Aucun fichier de log pour l'instant"
+        if command -v less >/dev/null; then exec less -R +G "$f"; else exec tail -n 200 "$f"; fi ;;
+      errors|err)
+        exec journalctl -u "$SERVICE" -o short-iso --no-pager -n 200 --grep '^(WRN|ERR)' ;;
+      -n)
+        exec journalctl -u "$SERVICE" -o cat -n "${2:-100}" -f ;;
+      *)
+        exec journalctl -u "$SERVICE" -o cat -n 50 -f ;;
+    esac
+    ;;
+
+  login)
+    need_root login "$@"
+    if [[ ${1:-} == --force ]] && systemctl is-active --quiet "$SERVICE"; then
+      systemctl stop "$SERVICE"; restart_after=1
+    fi
+    cli login "$@"
+    if [[ ${restart_after:-0} -eq 1 ]] || ! systemctl is-active --quiet "$SERVICE"; then
+      read -rp "Démarrer le bot maintenant ? (o/n) [o] : " ans || true
+      [[ ${ans:-o} =~ ^[oOyY] ]] && "$0" start
+    fi
+    ;;
+
+  config)
+    need_root config "$@"
+    cp "$ENV_FILE" "$ENV_FILE.bak"
+    "${EDITOR:-${VISUAL:-nano}}" "$ENV_FILE"
+    if cmp -s "$ENV_FILE" "$ENV_FILE.bak"; then rm -f "$ENV_FILE.bak"; echo "Aucun changement."; exit 0; fi
+    if cli check; then
+      rm -f "$ENV_FILE.bak"
+      read -rp "Redémarrer le bot pour appliquer ? (o/n) [o] : " ans || true
+      [[ ${ans:-o} =~ ^[oOyY] ]] && "$0" restart
+    else
+      mv "$ENV_FILE.bak" "$ENV_FILE"
+      die "Configuration invalide : modifications annulées"
+    fi
+    ;;
+
+  check)
+    need_root check "$@"
+    cli check
+    ;;
+
+  debug)
+    need_root debug "$@"
+    if systemctl is-active --quiet "$SERVICE"; then
+      echo "Arrêt du service pendant le mode debug (Ctrl+C pour quitter)..."
+      systemctl stop "$SERVICE"
+      trap 'echo; "$0" start' EXIT
+    fi
+    cd "$INSTALL_DIR"
+    runuser -u "$BOT_USER" -- env HOME="$INSTALL_DIR" LOG_LEVEL=debug LOG_FORMAT=pretty "$NODE_BIN" src/cli.js start || true
+    ;;
+
+  update)
+    need_root update "$@"
+    src=$(cat "$INSTALL_DIR/.install-source" 2>/dev/null || true)
+    [[ -n $src && -f $src/install.sh ]] || die "Dossier source introuvable : relance install.sh depuis le dépôt"
+    if [[ -d $src/.git ]]; then
+      echo "Mise à jour du dépôt $src..."
+      git -C "$src" pull --ff-only || die "git pull a échoué (modifications locales ?)"
+    fi
+    exec bash "$src/install.sh" --yes --dir "$INSTALL_DIR" --user "$BOT_USER"
+    ;;
+
+  uninstall)
+    need_root uninstall "$@"
+    src=$(cat "$INSTALL_DIR/.install-source" 2>/dev/null || true)
+    script="$INSTALL_DIR/install.sh"; [[ -n $src && -f $src/install.sh ]] && script=$src/install.sh
+    exec bash "$script" --uninstall --dir "$INSTALL_DIR" --user "$BOT_USER"
+    ;;
+
+  version|--version|-v)
+    sed -n 's/.*"version": *"\([^"]*\)".*/BotMC v\1/p' "$INSTALL_DIR/package.json" | head -1
+    ;;
+
+  help|--help|-h) usage ;;
+  *) usage; die "Commande inconnue : $cmd" ;;
+esac
