@@ -1,138 +1,118 @@
 /**
- * portal.js
- * Passerelle Minecraft Bedrock via Xbox Live & NetherNet (WebRTC).
+ * portal.js — Passerelle Minecraft Bedrock (mode principal)
  *
- * Flux :
- *   1. Le bot s'authentifie sur Xbox Live et publie une session MPSD.
- *   2. Les amis voient le monde dans l'onglet Amis et cliquent "Rejoindre".
- *   3. bedrock-portal gère le transfer automatiquement vers ip:port.
- *   4. Les demandes d'amis sont acceptées instantanément via Xbox RTA.
- *   5. Après chaque départ, la session est entièrement recréée pour
- *      accepter de nouvelles connexions NetherNet.
+ * Flux (cf. documentation bedrock-portal) :
+ *   1. Le compte bot se connecte à Xbox Live et publie une session NetherNet.
+ *   2. Ses amis voient le monde dans l'onglet Amis et cliquent « Rejoindre ».
+ *   3. bedrock-portal vérifie le joueur (nonce de session), envoie un faux
+ *      start_game puis un paquet `transfer` vers TARGET_HOST:TARGET_PORT.
+ *   4. Les demandes d'amis sont acceptées instantanément (Xbox RTA) et les
+ *      followers sont ajoutés en retour.
+ *
+ * La session reste ouverte en permanence : plusieurs joueurs peuvent se
+ * connecter et être transférés à la suite sans la recréer.
  */
 
-import 'dotenv/config'
-import path from 'path'
-import { fileURLToPath } from 'url'
-import { BedrockPortal, Joinability, Modules } from 'bedrock-portal'
-import prismarineAuth from 'prismarine-auth'
+import { Modules } from 'bedrock-portal'
+import { loadConfig } from './config.js'
+import { GatewayPortal } from './gatewayPortal.js'
 import { Dashboard } from './dashboard.js'
 
-const { Titles } = prismarineAuth
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-
-const CONFIG = {
-  targetHost:   process.env.TARGET_HOST        || '72.61.198.158',
-  targetPort:   parseInt(process.env.TARGET_PORT   || '19132', 10),
-  worldName:    process.env.WORLD_NAME         || 'Mon Serveur Minecraft',
-  motd:         process.env.GATEWAY_MOTD       || 'Rejoins le serveur !',
-  maxPlayers:   parseInt(process.env.MAX_PLAYERS   || '20', 10),
-  authCacheDir: path.resolve(__dirname, '..', process.env.AUTH_CACHE_DIR || './auth_cache'),
-  accountLabel: process.env.HOST_ACCOUNT_LABEL || 'gateway-host',
+let config
+try {
+  config = loadConfig()
+} catch (err) {
+  console.error(`\n  Configuration invalide : ${err.message}\n  Copie .env.example en .env et remplis-le.\n`)
+  process.exit(1)
 }
 
-const dashboard = new Dashboard(CONFIG)
+const dashboard = new Dashboard({
+  mode:       'gateway',
+  targetHost: config.targetHost,
+  targetPort: config.targetPort,
+  worldName:  config.world.hostName,
+  joinability: config.joinabilityLabel,
+  account:    config.auth.username,
+  autoFriendAdd: config.autoFriendAdd,
+})
 
-// ── Création du portail ───────────────────────────────────────────────────────
+const name = (player) => player?.profile?.gamertag ?? player?.profile?.xuid ?? 'Joueur'
 
 function buildPortal() {
-  const portal = new BedrockPortal({
-    ip:          CONFIG.targetHost,
-    port:        CONFIG.targetPort,
-    joinability: Joinability.FriendsOfFriends,
+  const portal = new GatewayPortal({
+    ip:          config.targetHost,
+    port:        config.targetPort,
+    joinability: config.joinability,
     host: {
-      username: CONFIG.accountLabel,
-      cache:    CONFIG.authCacheDir,
-      options: {
-        authTitle:  Titles.MinecraftNintendoSwitch,
-        deviceType: 'Nintendo',
-        flow:       'live',
-      },
-      onMsaCode: (res) => {
-        dashboard.authRequired(res.verification_uri, res.user_code)
-      },
+      ...config.auth,
+      onMsaCode: (res) => dashboard.authRequired(res.verification_uri, res.user_code),
     },
-    world: {
-      hostName:       CONFIG.worldName,
-      name:           CONFIG.motd,
-      version:        '1.26.60',
-      memberCount:    1,
-      maxMemberCount: CONFIG.maxPlayers,
-    },
-  })
+    world: config.world,
+  }, (level, msg) => dashboard[level === 'info' ? 'session' : level](msg))
 
+  // Accepte les demandes d'amis et invite directement la personne dans la session
   portal.use(Modules.AutoFriendAccept, { inviteOnAdd: true })
-  portal.use(Modules.AutoFriendAdd,    { inviteOnAdd: true })
+
+  // Ajoute en ami les comptes qui suivent le bot. Attention : retire aussi les amis
+  // qui ne suivent plus le bot (comportement de la lib). Désactivable via AUTO_FRIEND_ADD=false
+  if (config.autoFriendAdd) {
+    portal.use(Modules.AutoFriendAdd, { inviteOnAdd: true })
+  }
+
+  // ── Événements Xbox Live ──────────────────────────────────────────────
+  portal.on('friendAdded',   (p) => dashboard.friendAccepted(name(p), p?.profile?.xuid ?? '?'))
+  portal.on('friendRemoved', (p) => dashboard.friendRemoved(name(p)))
+  portal.on('playerJoin',    (p) => dashboard.playerJoined(name(p)))
+  portal.on('playerLeave',   (p) => dashboard.playerLeft(name(p)))
+
+  // ── Événements réseau (NetherNet) : suivi réel du transfert ───────────
+  // Ce listener est attaché une seule fois : `portal.server` survit aux redémarrages.
+  portal.server.on('connect', (client) => {
+    client.once('login', () => dashboard.playerConnecting(client.profile?.name ?? 'Joueur'))
+    // bedrock-portal envoie le paquet `transfer` à la réception de request_chunk_radius
+    client.once('request_chunk_radius', () => {
+      setImmediate(() => dashboard.playerTransferred(client.profile?.name ?? 'Joueur'))
+    })
+  })
 
   return portal
 }
 
-// ── Attache les événements ────────────────────────────────────────────────────
-
-function attachEvents(portal) {
-  portal.on('friendAdded', (player) => {
-    const gamertag = player?.profile?.gamertag ?? player?.gamertag ?? 'Inconnu'
-    const xuid     = player?.profile?.xuid     ?? player?.xuid     ?? '???'
-    dashboard.friendAccepted(gamertag, xuid)
-  })
-
-  portal.on('playerJoin', (player) => {
-    const gamertag = player?.profile?.gamertag ?? player?.gamertag ?? 'Joueur'
-    dashboard.playerConnecting(gamertag)
-    dashboard.playerRedirected(gamertag)
-  })
-
-  portal.on('playerLeave', async (player) => {
-    const gamertag = player?.profile?.gamertag ?? player?.gamertag ?? 'Joueur'
-    dashboard.playerDisconnected(gamertag)
-
-    // Petit délai pour laisser le temps à Xbox Live de propager le départ
-    await new Promise(r => setTimeout(r, 1500))
-
-    // Recrée une session MPSD + un nouveau listener NetherNet
-    // Sans ça, la prochaine tentative de connexion WebRTC est rejetée
-    dashboard.log('⟳', 'SESSION', 'Recréation de la session en cours...', '\x1b[36m')
-    try {
-      await portal.end(true)   // end() + start() → nouvelle session, même auth
-      dashboard.log('✓', 'SESSION', 'Session recréée — prêt pour la prochaine connexion', '\x1b[32m')
-    } catch (err) {
-      dashboard.warn(`Recréation de session échouée : ${err.message}`)
-    }
-  })
-}
-
-// ── Démarrage ─────────────────────────────────────────────────────────────────
-
 async function main() {
-  console.log('\n  ⏳ Initialisation de la passerelle Minecraft...\n')
+  dashboard.log('…', 'DEMARRAGE', 'Connexion à Xbox Live et publication de la session...')
 
   const portal = buildPortal()
-  attachEvents(portal)
 
   try {
     await portal.start()
-    dashboard.renderHeader()
-    dashboard.log('▶', 'PRÊT', `Passerelle active — les amis peuvent rejoindre !`, '\x1b[32m')
   } catch (err) {
     dashboard.error(`Échec du démarrage : ${err.message}`)
     console.error(err)
     process.exit(1)
   }
 
-  // ── Arrêt propre ──────────────────────────────────────────────────────────
+  dashboard.renderHeader()
+  dashboard.log('▶', 'PRET', 'Passerelle active — tes amis peuvent rejoindre depuis l\'onglet Amis', '\x1b[32m')
 
+  let shuttingDown = false
   const shutdown = async (signal) => {
-    console.log(`\n  Signal ${signal} reçu — fermeture en cours...`)
+    if (shuttingDown) return
+    shuttingDown = true
+    dashboard.log('■', 'ARRET', `${signal} reçu — fermeture de la session...`)
+    const force = setTimeout(() => process.exit(1), 10_000)
     await portal.end()
-    console.log('  ✅ Passerelle fermée.\n')
+    clearTimeout(force)
     process.exit(0)
   }
-
   process.on('SIGINT',  () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 }
 
+// Une erreur réseau isolée ne doit pas faire tomber la passerelle
+process.on('unhandledRejection', (err) => dashboard.warn(`Erreur non gérée : ${err?.message ?? err}`))
+
 main().catch((err) => {
-  console.error('\n❌ Erreur inattendue :', err)
+  dashboard.error(`Erreur inattendue : ${err.message}`)
+  console.error(err)
   process.exit(1)
 })
