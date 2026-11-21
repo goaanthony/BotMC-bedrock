@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { Logger, DailyFile, describe, stripAnsi } from '../src/core/logger.js'
+import { Logger, DailyFile, describe, stripAnsi, redact } from '../src/core/logger.js'
 
 const sink = () => {
   const lines = []
@@ -72,4 +72,31 @@ test('describe() affiche la cause réseau', () => {
   assert.equal(describe(err), 'fetch failed (ENOTFOUND login.live.com)')
   assert.equal(describe(new Error('simple')), 'simple')
   assert.equal(stripAnsi('\x1b[31mrouge\x1b[0m'), 'rouge')
+})
+
+test('redact() masque les jetons et nonces', () => {
+  const jwt = 'eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIn0..I4YeqPOVSu5Lhcoe1q1dCQ.JhYZrp3zHRocx3r2DZLv.CMGwC1KLOdfi3ZPX'
+  const out = redact(`have at, rt { valid: true, token: '${jwt}' } { token: 'M.C540_BAY.0.U.MsaArtifacts.-Crg!5Dd!Ui5F4y$$' }`)
+  assert.equal(out.includes('I4YeqPOVSu5'), false)
+  assert.equal(out.includes('MsaArtifacts'), false)
+  assert.match(out, /valid: true/)
+  assert.match(redact("XSTSToken: 'abcdefghijklmnop', userHash: '1802'"), /XSTSToken: '\[masqué\]', userHash: '1802'/)
+  assert.match(redact('mcToken: \'MCToken eyJhbGciOiJSUzI1NiIsImtpZCI6.eyJzdWIiOi.uJezlu8m\''), /\[masqué\]/)
+  assert.equal(redact('wss://rta.xboxlive.com/connect?nonce=brmKh7eJat6l_nrzX2yR8uF1'), 'wss://rta.xboxlive.com/connect?nonce=[masqué]')
+  assert.equal(redact('Fetched RTA nonce brmKh7eJat6l_nrzX2yR8uF1ttVajd7T5cD5HUR-UnM.'), 'Fetched RTA nonce [masqué]')
+  assert.equal(redact('Session publiée : 41e4351c-0ead-4f01'), 'Session publiée : 41e4351c-0ead-4f01')
+})
+
+test('les logs des bibliothèques passent par redact()', async () => {
+  const { default: createDebug } = await import('debug')
+  const out = sink()
+  const log = new Logger({ level: 'debug', out })
+  log.captureLibraryLogs()
+  const d = createDebug('prismarine-auth')
+  d.enabled = true
+  d('[xbl] xsts', { userXUID: '2535', XSTSToken: 'eyJhbGciOiJSU0EtT0FFUCJ9.F8Cg0f6Ujoq7pqlRS2KN.GcBK' })
+  const text = out.lines.join('')
+  assert.match(text, /prismarine-auth \[xbl\] xsts/)
+  assert.match(text, /userXUID: '2535'/)
+  assert.equal(text.includes('F8Cg0f6Ujoq7'), false)
 })

@@ -109,6 +109,23 @@ export function prettyLine(time, level, category, message) {
     `${cat.color}${ANSI.bold}${cat.label.padEnd(10)}${ANSI.reset} ${msgColor}${message}${ANSI.reset}`
 }
 
+/**
+ * Masque les secrets (jetons Microsoft / Xbox / Minecraft, nonces) avant
+ * qu'ils n'arrivent dans la console ou les fichiers de log.
+ */
+export function redact(text) {
+  return String(text)
+    // JWT / JWE (jetons XSTS, MCToken, jetons d'appareil…)
+    .replace(/eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*){1,4}/g, 'eyJ…[masqué]')
+    // jetons Microsoft (accès / rafraîchissement)
+    .replace(/\bM\.C\d+_[A-Za-z0-9]+\.[^\s'",}]+/g, 'M.C…[masqué]')
+    .replace(/\bEw[A-Za-z0-9+/=_-]{40,}/g, 'Ew…[masqué]')
+    // champs nommés token / nonce / signature / key, quelle que soit la valeur
+    .replace(/(\b\w*(?:token|Token|nonce|Nonce|signature|Signature|secret|Secret|password|Password)\w*['"]?\s*[:=]\s*['"])([^'"]{8,})(['"])/g, '$1[masqué]$3')
+    .replace(/([?&](?:nonce|token|code)=)[^\s&'"]+/g, '$1[masqué]')
+    .replace(/(\bnonce\s+)[A-Za-z0-9_.-]{16,}/gi, '$1[masqué]')
+}
+
 export class Logger {
   /**
    * @param {object} opts
@@ -180,7 +197,9 @@ export class Logger {
     const logger = this
     createDebug.formatArgs = function () {} // pas de préfixe ni de couleur : on formate nous-mêmes
     createDebug.log = function (...args) {
-      logger.debug('lib', `${this.namespace} ${util.format(...args)}`)
+      // objets abrégés (les réponses Xbox font des centaines de lignes) et secrets masqués
+      const text = util.formatWithOptions({ depth: 2, maxArrayLength: 6, maxStringLength: 300, breakLength: 160 }, ...args)
+      logger.debug('lib', `${this.namespace} ${redact(text)}`)
     }
     if (this.level <= LEVELS.debug && !process.env.DEBUG) createDebug.enable(namespaces)
   }
