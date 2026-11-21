@@ -59,7 +59,7 @@ Aucun port à ouvrir : la passerelle n'utilise que des connexions sortantes (Xbo
 
 ## Lancement manuel (Windows, macOS, dev)
 
-Node.js 20 ou plus récent est requis.
+Node.js 22 ou plus récent est requis (Node 20 n'est plus maintenu et son client réseau pose problème avec Xbox Live).
 
 ```bash
 npm install

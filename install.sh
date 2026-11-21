@@ -22,7 +22,7 @@
 set -Eeuo pipefail
 
 SERVICE=botmc
-NODE_MAJOR_MIN=20
+NODE_MAJOR_MIN=22
 NODE_MAJOR_INSTALL=22
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -92,7 +92,8 @@ if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then HAS_SYS
 UNIT_FILE=/etc/systemd/system/$SERVICE.service
 CLI_FILE=/usr/local/bin/botmc
 
-as_bot() { runuser -u "$BOT_USER" -- env HOME="$INSTALL_DIR" "$@"; }
+# NODE_DIR est défini à l'étape Node.js : le bon Node passe avant tout autre dans le PATH
+as_bot() { runuser -u "$BOT_USER" -- env HOME="$INSTALL_DIR" PATH="${NODE_DIR:+$NODE_DIR:}$PATH" "$@"; }
 
 # ── Désinstallation ──────────────────────────────────────────────────────
 if [[ $UNINSTALL -eq 1 ]]; then
@@ -162,19 +163,34 @@ ok "Outils de base présents (curl, rsync)"
 
 # ── 2. Node.js ───────────────────────────────────────────────────────────
 step "Node.js"
-node_major() { command -v node >/dev/null && node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
-if [[ $(node_major) -lt $NODE_MAJOR_MIN ]]; then
-  info "Node.js ${NODE_MAJOR_MIN}+ requis (trouvé : $(command -v node >/dev/null && node -v || echo aucun)) → installation de Node.js ${NODE_MAJOR_INSTALL}"
-  case $PKG in
-    apt)     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR_INSTALL}.x" | bash - >/dev/null 2>&1 ;;
-    dnf|yum) curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MAJOR_INSTALL}.x" | bash - >/dev/null 2>&1 ;;
-    *)       die "Installe Node.js ${NODE_MAJOR_MIN}+ manuellement puis relance ce script" ;;
-  esac
-  pkg_install nodejs || die "L'installation de Node.js a échoué"
+node_major() { # node_major [binaire] → version majeure (0 si absent)
+  local bin=${1:-}
+  [[ -n $bin && -x $bin ]] && "$bin" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
+}
+NODE_BIN=$(command -v node || true)
+if [[ $(node_major "$NODE_BIN") -lt $NODE_MAJOR_MIN ]]; then
+  OLD_NODE="$NODE_BIN $([[ -n $NODE_BIN ]] && "$NODE_BIN" -v 2>/dev/null)"
+  if [[ $(node_major /usr/bin/node) -ge $NODE_MAJOR_MIN ]]; then
+    NODE_BIN=/usr/bin/node   # un Node récent existe mais est masqué dans le PATH
+  else
+    found=${NODE_BIN:+$OLD_NODE}
+    info "Node.js ${NODE_MAJOR_MIN}+ requis (trouvé : ${found:-aucun}) → installation de Node.js ${NODE_MAJOR_INSTALL}"
+    case $PKG in
+      apt)     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR_INSTALL}.x" | bash - >/dev/null 2>&1 ;;
+      dnf|yum) curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MAJOR_INSTALL}.x" | bash - >/dev/null 2>&1 ;;
+      *)       die "Installe Node.js ${NODE_MAJOR_MIN}+ manuellement puis relance ce script" ;;
+    esac
+    pkg_install nodejs || die "L'installation de Node.js a échoué"
+    NODE_BIN=/usr/bin/node
+  fi
+  if [[ -n ${OLD_NODE// /} && $OLD_NODE != /usr/bin/node* ]]; then
+    warn "Ancien Node.js ignoré : $OLD_NODE (BotMC utilisera $NODE_BIN)"
+  fi
 fi
-[[ $(node_major) -ge $NODE_MAJOR_MIN ]] || die "Node.js ${NODE_MAJOR_MIN}+ introuvable après installation"
-NODE_BIN=$(command -v node)
-ok "Node.js $(node -v) ($NODE_BIN), npm $(npm -v)"
+[[ $(node_major "$NODE_BIN") -ge $NODE_MAJOR_MIN ]] || die "Node.js ${NODE_MAJOR_MIN}+ introuvable après installation"
+NODE_DIR=$(dirname "$NODE_BIN")
+[[ -x $NODE_DIR/npm ]] || die "npm introuvable à côté de $NODE_BIN"
+ok "Node.js $("$NODE_BIN" -v) ($NODE_BIN), npm $(PATH="$NODE_DIR:$PATH" "$NODE_DIR/npm" -v)"
 
 # ── 3. Utilisateur et fichiers ───────────────────────────────────────────
 step "Utilisateur et fichiers"
@@ -209,7 +225,7 @@ chmod 700 "$INSTALL_DIR/auth_cache"
 # ── 4. Dépendances ───────────────────────────────────────────────────────
 step "Dépendances npm"
 info "npm ci --omit=dev (peut prendre une minute)..."
-( cd "$INSTALL_DIR" && as_bot npm ci --omit=dev --no-audit --no-fund --update-notifier=false --loglevel=error --cache "$INSTALL_DIR/.npm" ) \
+( cd "$INSTALL_DIR" && as_bot "$NODE_DIR/npm" ci --omit=dev --no-audit --no-fund --update-notifier=false --loglevel=error --cache "$INSTALL_DIR/.npm" ) \
   || die "npm ci a échoué (voir les messages ci-dessus)"
 ( cd "$INSTALL_DIR" && as_bot "$NODE_BIN" -e "require('node-datachannel')" ) \
   || die "Le module WebRTC node-datachannel ne se charge pas sur cette machine"

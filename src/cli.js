@@ -42,6 +42,10 @@ process.stdout.on('error', (err) => { if (err.code === 'EPIPE') process.exit(0);
 
 const console$ = new Logger({ level: 'info' })
 
+if (Number(process.versions.node.split('.')[0]) < 22) {
+  console$.warn('system', `Node.js ${process.version} est trop ancien : installe Node.js 22 ou plus (relance install.sh sur un serveur Linux).`)
+}
+
 function fail(message, hint) {
   console$.error('system', message)
   if (hint) console$.raw(`  ${A.dim}${hint}${A.reset}`)
