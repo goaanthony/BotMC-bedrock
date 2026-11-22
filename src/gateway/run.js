@@ -17,7 +17,7 @@ import { formatMs } from '../core/stats.js'
 import { createRuntime, VERSION } from '../core/runtime.js'
 import { portalHostOptions } from '../core/auth.js'
 import { banner } from '../core/ui.js'
-import { GatewayPortal } from './GatewayPortal.js'
+import { GatewayPortal, TRANSFER_EVENT } from './GatewayPortal.js'
 import { SessionRefresher } from './SessionRefresher.js'
 import { describeClient } from '../core/client-info.js'
 
@@ -97,9 +97,10 @@ export async function runGateway(config) {
       stats.connection({ gamertag: who(), xuid: client.profile?.xuid, ...info })
       log.info('player', `${who()} se connecte  ${A.dim}${info.platform} · ${info.input} · ${info.version}${A.reset}`)
     })
-    // bedrock-portal envoie le paquet `transfer` à la réception de request_chunk_radius
-    client.once('request_chunk_radius', () => {
+    // GatewayPortal émet cet événement quand le paquet `transfer` est envoyé
+    client.once(TRANSFER_EVENT, (why) => {
       transferred = true
+      if (why === 'timeout') log.debug('transfer', `${who()} n'a pas confirmé son apparition : transfert envoyé après le délai de secours`)
       setImmediate(() => {
         const ms = Date.now() - t0
         const xuid = String(client.profile?.xuid ?? '')

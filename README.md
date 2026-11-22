@@ -7,7 +7,7 @@ Passerelle qui permet à tes amis Xbox Live de rejoindre ton serveur Minecraft B
 ## Comment ça marche
 
 1. Le compte bot se connecte à Xbox Live et publie une session de jeu (NetherNet / WebRTC). Le monde apparaît dans l'onglet **Amis** de ses amis.
-2. Quand quelqu'un clique « Rejoindre », la passerelle vérifie qu'il vient bien de la session, simule le début d'un monde, puis lui envoie un paquet `transfer` (mécanisme officiel de Minecraft) vers `TARGET_HOST:TARGET_PORT`.
+2. Quand quelqu'un clique « Rejoindre », la passerelle vérifie qu'il vient bien de la session, le fait apparaître dans un monde vide, attend que le jeu confirme qu'il est prêt, puis lui envoie un paquet `transfer` (mécanisme officiel de Minecraft) vers `TARGET_HOST:TARGET_PORT`. Transférer plus tôt, pendant le chargement, fait planter le jeu sur certaines plateformes.
 3. Le jeu du joueur se connecte alors directement à ton vrai serveur : la passerelle n'est plus dans la boucle.
 4. Une session neuve est publiée après chaque transfert (sinon un joueur ne pourrait pas revenir), et les demandes d'amis sont acceptées instantanément.
 
